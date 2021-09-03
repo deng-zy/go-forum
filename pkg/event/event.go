@@ -15,13 +15,12 @@ type Event struct {
 }
 
 type Bus struct {
-	workers      int
-	hub          map[string]chan *Event
-	subscriber   map[string][]Listener
-	resultChan   chan *Result
-	signal       chan bool
-	workerSignal chan bool
-	channels     []chan *Event
+	workers    int
+	hub        map[string]chan *Event
+	subscriber map[string][]Listener
+	resultChan chan *Result
+	signal     chan bool
+	channels   []chan *Event
 
 	timeout time.Duration
 	mu      sync.RWMutex
@@ -41,14 +40,13 @@ func NewBus(worker int, timeout time.Duration) *Bus {
 	}
 
 	return &Bus{
-		workers:      worker,
-		channels:     []chan *Event{},
-		hub:          map[string]chan *Event{},
-		resultChan:   make(chan *Result, 4096),
-		signal:       make(chan bool),
-		workerSignal: make(chan bool, worker),
-		subscriber:   map[string][]Listener{},
-		timeout:      timeout,
+		workers:    worker,
+		channels:   []chan *Event{},
+		hub:        map[string]chan *Event{},
+		signal:     make(chan bool),
+		subscriber: map[string][]Listener{},
+		resultChan: make(chan *Result, 4096),
+		timeout:    timeout,
 	}
 }
 
@@ -86,10 +84,10 @@ func (b *Bus) Subscribe(topic string, listener Listener) {
 	}
 
 	subscribers = []Listener{listener}
-	ch := make(chan *Event, 1024)
+	channel := make(chan *Event, 1024)
 	b.subscriber[topic] = subscribers
-	b.hub[topic] = ch
-	b.channels = append(b.channels, ch)
+	b.hub[topic] = channel
+	b.channels = append(b.channels, channel)
 }
 
 func (b *Bus) Len() int {
@@ -102,6 +100,10 @@ func (b *Bus) Len() int {
 
 func (b *Bus) IsEmpty() bool {
 	return b.Len() == 0
+}
+
+func (b *Bus) Fails() chan *Result {
+	return b.resultChan
 }
 
 func (b *Bus) Stop() {
@@ -167,23 +169,28 @@ func (b *Bus) listener(listener Listener, ch chan *Event) {
 			success = false
 		}
 
-		b.resultChan <- &Result{
+		res := &Result{
 			Topic:   e.Topic,
 			Success: success,
 			Err:     err,
 		}
+
+		if cap(b.resultChan) == 0 {
+			go func(res *Result) {
+				b.resultChan <- res
+			}(res)
+		}
+		b.resultChan <- res
 	}
 }
 
 func (b *Bus) Bootstrap() {
 	b.dispatch()
 
+	timer := time.NewTimer(1 * time.Second)
+
 	for {
-		select {
-		case <-b.signal:
-			fmt.Println("see you again!!!!!")
-		case <-time.After(time.Second):
-			fmt.Printf("topic length:%d\n", b.Len())
-		}
+		t := <-timer.C
+		fmt.Printf("%s-topic length:%d\n", t.Format(time.RFC3339), b.Len())
 	}
 }
