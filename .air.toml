@@ -2,8 +2,8 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-  bin = "tmp\\web.exe"
-  cmd = "go build -o ./tmp/web.exe ./cmd/web/web.go"
+  bin = "./tmp/web"
+  cmd = "go build -o ./tmp/web ./cmd/web/web.go"
   delay = 1000
   exclude_dir = ["assets", "tmp", "vendor", "public", "web"]
   exclude_file = []
