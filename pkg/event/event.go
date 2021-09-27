@@ -23,7 +23,7 @@ type Event struct {
 //Bus 事件
 type Bus struct {
 	workers    int
-	hub        map[string]chan *Event
+	hub        map[string][]chan *Event
 	subscriber map[string][]Listener
 	resultChan chan *Result
 	signal     chan bool
@@ -53,7 +53,7 @@ func NewBus(worker int, dataFile string) *Bus {
 	return &Bus{
 		workers:    worker,
 		channels:   []chan *Event{},
-		hub:        map[string]chan *Event{},
+		hub:        map[string][]chan *Event{},
 		signal:     make(chan bool, 1),
 		subscriber: map[string][]Listener{},
 		closed:     false,
@@ -69,29 +69,30 @@ func (b *Bus) Publish(topic string, data interface{}) {
 	}
 
 	b.mu.RLock()
-	ch, ok := b.hub[topic]
+	channels, ok := b.hub[topic]
 	b.mu.RUnlock()
 
 	if !ok {
-		b.mu.Lock()
-		ch = make(chan *Event, 1024)
-		b.hub[topic] = ch
-		b.mu.Unlock()
-	}
-
-	if len(ch) == cap(ch) {
-		go func() {
-			ch <- &Event{
-				Topic: topic,
-				Data:  data,
-			}
-		}()
 		return
 	}
-	ch <- &Event{
+
+	e := &Event{
 		Topic: topic,
 		Data:  data,
 	}
+
+	deliver := func(ch chan *Event, e *Event) {
+		ch <- e
+	}
+
+	for _, channel := range channels {
+		if len(channel) == cap(channel) {
+			go deliver(channel, e)
+		} else {
+			deliver(channel, e)
+		}
+	}
+
 }
 
 //Subscribe a event
@@ -109,16 +110,18 @@ func (b *Bus) Subscribe(topic string, listener ...Listener) {
 
 	b.subMu.Lock()
 	if !hubExist {
-		channel = make(chan *Event, 1024)
+		channel = make([]chan *Event, len(listener))
+		for i, executor := range listener {
+			ch := make(chan *Event, 1024)
+			b.bootstrapListener(executor, ch)
+			channel[i] = ch
+		}
 		b.hub[topic] = channel
-		b.channels = append(b.channels, channel)
+		b.channels = append(b.channels, channel...)
 	}
+
 	b.subscriber[topic] = subscribers
 	b.subMu.Unlock()
-
-	for _, executor := range listener {
-		b.bootstrapListener(executor, channel)
-	}
 }
 
 //Len len
@@ -167,18 +170,20 @@ func (b *Bus) Stop() {
 //dump channel数据到文件
 func (b *Bus) dump() {
 	data := map[string][]*Event{}
-	for topic, channel := range b.hub {
-		num := len(channel)
+	for topic, channels := range b.hub {
+		num := len(channels)
 		if num < 1 {
 			continue
 		}
 		rows := []*Event{}
-		for {
-			select {
-			case e := <-channel:
-				rows = append(rows, e)
-			case <-time.After(time.Microsecond):
-				goto read
+		for _, channel := range channels {
+			for {
+				select {
+				case e := <-channel:
+					rows = append(rows, e)
+				case <-time.After(time.Microsecond):
+					goto read
+				}
 			}
 		}
 	read:
@@ -210,19 +215,20 @@ func (b *Bus) load() error {
 		return err
 	}
 
+	deliver := func(ch chan *Event, e *Event) {
+		ch <- e
+	}
+
 	for topic, events := range data {
-		channel, ok := b.hub[topic]
+		channels, ok := b.hub[topic]
 		if !ok {
-			size := len(channel)
-			if size < 1024 {
-				size = 1024
-			}
-			channel = make(chan *Event, size)
-			b.hub[topic] = channel
+			continue
 		}
 
 		for _, event := range events {
-			channel <- event
+			for _, ch := range channels {
+				deliver(ch, event)
+			}
 		}
 	}
 
