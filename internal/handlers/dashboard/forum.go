@@ -18,7 +18,7 @@ var forumService = services.ForumService
 
 func CreateForum(c *gin.Context) {
 	input := &request.Forum{}
-	if !helper.Validator(c, input) {
+	if !helper.Bind(c, input) {
 		return
 	}
 
@@ -36,12 +36,58 @@ func CreateForum(c *gin.Context) {
 	c.Abort()
 }
 
-func UpdateForum(c *gin.Context) {
+func ShowForum(c *gin.Context) {
+	forumID, err := strconv.ParseUint(c.Param("forum"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.InvalidParams, err.Error()))
+		c.Abort()
+		return
+	}
 
+	forum, err := forumService.Show(forumID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, res.JsonErrorMessage(constants.InternalError, "system internal error."))
+		c.Abort()
+		return
+	}
+
+	c.JSON(http.StatusOK, res.JsonData(render.CreateForum(forum)))
+}
+
+func UpdateForum(c *gin.Context) {
+	forum, err := strconv.ParseUint(c.Param("forum"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.InvalidParams, err.Error()))
+		c.Abort()
+		return
+	}
+
+	input := &request.Forum{}
+	if !helper.Bind(c, input) {
+		return
+	}
+
+	err = forumService.Update(forum, input)
+
+	if err == nil {
+		c.JSON(http.StatusOK, res.JsonSuccess())
+		return
+	}
+
+	if errors.Is(services.ErrNameDuplicate, err) || errors.Is(services.ErrForumIdDuplicate, err) {
+		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.LogicError, err.Error()))
+	} else {
+		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.InternalError, services.ErrInternal.Error()))
+	}
+	c.Abort()
 }
 
 func DeleteForum(c *gin.Context) {
-	forum, _ := strconv.ParseUint(c.Param("forum"), 10, 64)
+	forum, err := strconv.ParseUint(c.Param("forum"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.InvalidParams, err.Error()))
+		return
+	}
 	forumService.Delete(forum)
 	c.JSON(http.StatusOK, res.JsonSuccess())
 }

@@ -25,9 +25,26 @@ func (f *forumRepository) Create(form *model.Forum) (err error) {
 	return
 }
 
+func (f *forumRepository) Update(forumID uint64, info *model.Forum) (err error) {
+	err = f.db.Model(info).Where("forum_id=?", forumID).Updates(info).Error
+	return
+}
+
+func (f *forumRepository) Info(forumID uint64) (forum *model.Forum, err error) {
+	forum = &model.Forum{}
+	err = f.db.Where("forum_id=?", forumID).First(forum).Error
+	return
+}
+
+func (f *forumRepository) InfoWithName(name string) (forum *model.Forum, err error) {
+	forum = &model.Forum{}
+	err = f.db.Unscoped().Where("name=?", name).First(forum).Error
+	return
+}
+
 func (f *forumRepository) Exists(column string, value interface{}) bool {
-	var count int64 = 0
-	f.db.Model(&model.Forum{}).Where(fmt.Sprintf("%s=?", column), value).Count(&count)
+	var count int64
+	f.db.Unscoped().Model(&model.Forum{}).Where(fmt.Sprintf("%s=?", column), value).Count(&count)
 	return count > 0
 }
 
@@ -35,6 +52,12 @@ func (f *forumRepository) All(limit, offset int) []*model.Forum {
 	forums := []*model.Forum{}
 	f.db.Model(&forums).Limit(limit).Offset(offset).Find(&forums)
 	return forums
+}
+
+func (f *forumRepository) AllForumID() (forumIDLi []uint64) {
+	m := &model.Forum{}
+	f.db.Model(m).Pluck("forum_id", &forumIDLi)
+	return
 }
 
 func (f *forumRepository) Delete(forum uint64) error {

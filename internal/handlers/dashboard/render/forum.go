@@ -2,6 +2,7 @@ package render
 
 import "forum/pkg/model"
 
+//CreateAllForum create forum list response
 func CreateAllForum(in []*model.Forum) []*model.ForumResponse {
 	if len(in) < 1 {
 		return []*model.ForumResponse{}
@@ -20,4 +21,17 @@ func CreateAllForum(in []*model.Forum) []*model.ForumResponse {
 		}
 	}
 	return out
+}
+
+//CreateForum create show forum response
+func CreateForum(forum *model.Forum) *model.ForumResponse {
+	return &model.ForumResponse{
+		ForumID:   forum.ForumId,
+		Name:      forum.Name,
+		Intro:     forum.Intro,
+		Sort:      forum.Sort,
+		Parent:    forum.Parent,
+		CreatedAt: forum.CreatedAt.Format("2006-01-02 15:04:05"),
+		UpdatedAt: forum.UpdatedAt.Format("2006-01-02 15:04:05"),
+	}
 }

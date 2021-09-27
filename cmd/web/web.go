@@ -5,5 +5,6 @@ import (
 )
 
 func main() {
+	go app.RunBus()
 	app.Run()
 }

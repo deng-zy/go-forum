@@ -13,9 +13,9 @@ database:
 redis:
   connections:
     default:
-      host:
-      port:
-      db:
+      host: 172.16.13.62
+      port: 6379
+      db: 6
       password:
 id:
   node: 1

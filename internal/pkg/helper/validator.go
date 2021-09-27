@@ -11,7 +11,7 @@ import (
 
 var ErrInvalidParams = errors.New("invalid params")
 
-func Validator(c *gin.Context, obj interface{}) bool {
+func Bind(c *gin.Context, obj interface{}) bool {
 	err := c.ShouldBind(obj)
 	if err != nil {
 		c.JSON(http.StatusOK, res.JsonErrorMessage(constants.InvalidParams, ErrInvalidParams.Error()))
