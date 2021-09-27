@@ -2,7 +2,7 @@ package app
 
 import (
 	"forum/internal/pkg/capsule"
-	"forum/internal/pkg/constants"
+	"forum/internal/pkg/constants/event"
 	"forum/internal/services"
 )
 
@@ -14,10 +14,12 @@ func RunBus() {
 
 //subscribe event
 func subscribe() {
-	capsule.Bus.Subscribe(constants.EventUpdateForum, services.ForumService.BuildInfoCache)
-	capsule.Bus.Subscribe(constants.EventNewForum, services.ForumService.BuildInfoCache,
+	capsule.Bus.Subscribe(event.EventUpdateForum, services.ForumService.BuildInfoCache)
+	capsule.Bus.Subscribe(event.EventNewForum,
+		services.ForumService.BuildInfoCache,
 		services.ForumService.BuildListCache)
-	capsule.Bus.Subscribe(constants.EventDeleteForum, services.ForumService.BuildListCache,
+	capsule.Bus.Subscribe(event.EventDeleteForum,
+		services.ForumService.BuildListCache,
 		services.ForumService.BuildInfoCache)
-	capsule.Bus.Subscribe(constants.EventRefreshForumCache, services.ForumService.BuildCache)
+	capsule.Bus.Subscribe(event.EventRefreshForumCache, services.ForumService.BuildCache)
 }

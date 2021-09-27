@@ -8,7 +8,7 @@ import (
 	"forum/internal/handlers/dashboard/request"
 	"forum/internal/pkg/capsule"
 	"forum/internal/pkg/config"
-	"forum/internal/pkg/constants"
+	cv "forum/internal/pkg/constants/event"
 	"forum/internal/repositories"
 	"forum/pkg/event"
 	"forum/pkg/model"
@@ -76,7 +76,7 @@ func (f *forumService) Create(form *request.Forum) error {
 	if err != nil {
 		return err
 	}
-	capsule.Bus.Publish(constants.EventNewForum, model.ForumId)
+	capsule.Bus.Publish(cv.EventNewForum, model.ForumId)
 	return nil
 }
 
@@ -105,7 +105,7 @@ func (f *forumService) Update(forumID uint64, form *request.Forum) error {
 		return err
 	}
 
-	capsule.Bus.Publish(constants.EventUpdateForum, forumID)
+	capsule.Bus.Publish(cv.EventUpdateForum, forumID)
 
 	return nil
 }
@@ -116,7 +116,7 @@ func (f *forumService) Delete(forum uint64) error {
 		return err
 	}
 
-	capsule.Bus.Publish(constants.EventNewForum, forum)
+	capsule.Bus.Publish(cv.EventNewForum, forum)
 	return nil
 }
 
@@ -134,7 +134,7 @@ func (f *forumService) BuildInfoCache(e *event.Event) error {
 	topic := e.Topic
 	ctx := context.Background()
 
-	if topic == constants.EventDeleteForum {
+	if topic == cv.EventDeleteForum {
 		_, err := redisClient.HDel(ctx, forumInfoCacheKey, strconv.FormatUint(forum, 10)).Result()
 		return err
 	}
@@ -154,13 +154,11 @@ func (f *forumService) BuildInfoCache(e *event.Event) error {
 }
 
 func (f *forumService) BuildListCache(e *event.Event) error {
-	fmt.Println("recv event", e.Topic, e.Data)
 	forums := forumRepository.AllForumID()
 	forumIDLi := make([]interface{}, len(forums))
 	for i, forumID := range forums {
 		forumIDLi[i] = forumID
 	}
-	fmt.Println("forumIDLi", forumIDLi)
 
 	ctx := context.Background()
 	_, err := redisClient.SAdd(ctx, forumListCacheKey, forumIDLi...).Result()
@@ -173,10 +171,10 @@ func (f *forumService) BuildListCache(e *event.Event) error {
 }
 
 func (f *forumService) BuildCache(e *event.Event) error {
-	capsule.Bus.Publish(constants.EventNewForum, nil)
+	capsule.Bus.Publish(cv.EventNewForum, nil)
 	forumIDLi := forumRepository.AllForumID()
 	for _, forumID := range forumIDLi {
-		capsule.Bus.Publish(constants.EventUpdateForum, forumID)
+		capsule.Bus.Publish(cv.EventUpdateForum, forumID)
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-package constants
+package event
 
 const (
 	// EventNewForum new forum
