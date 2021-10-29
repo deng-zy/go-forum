@@ -1,18 +1,18 @@
 package event
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"os"
-	"os/signal"
+	"runtime"
 	"sync"
-	"syscall"
+	"sync/atomic"
 	"time"
 )
 
-var maxWorker = 10
+var workerChnCap = func() int {
+	if runtime.GOMAXPROCS(0) == 1 {
+		return 0
+	}
+	return 1
+}()
 
 //Event 事件
 type Event struct {
@@ -22,286 +22,272 @@ type Event struct {
 
 //Bus 事件
 type Bus struct {
-	workers    int
-	hub        map[string][]chan *Event
-	subscriber map[string][]Listener
-	resultChan chan *Result
-	signal     chan bool
-	channels   []chan *Event
-	closed     bool
-	dataFile   string
-	mu         sync.RWMutex
-	subMu      sync.RWMutex
+	topic       map[string]string
+	handles     map[string][]Handle
+	opts        *Options
+	state       int32
+	workerCache sync.Pool
+	capacity    int32
+	cond        *sync.Cond
+	workers     *workerStack
+	lock        sync.Locker
+	rwLock      sync.RWMutex
+	running     int32
+	blockingNum int
 }
 
-//Result listenner处理结果
-type Result struct {
-	Topic   string
-	Success bool
-	Err     error
-}
+// Handle 事件处理者
+type Handle func(*Event) error
 
-//Listener 事件处理者
-type Listener func(*Event) error
+func loadOptions(options ...Option) (opts *Options) {
+	opts = new(Options)
+	for _, option := range options {
+		option(opts)
+	}
+
+	return
+}
 
 //NewBus  returns a new Bus
-func NewBus(worker int, dataFile string) *Bus {
-	if worker > maxWorker {
-		worker = maxWorker
+func NewBus(size int, options ...Option) *Bus {
+	opts := loadOptions(options...)
+
+	if opts.Logger == nil {
+		opts.Logger = defaultLogger
 	}
 
-	return &Bus{
-		workers:    worker,
-		channels:   []chan *Event{},
-		hub:        map[string][]chan *Event{},
-		signal:     make(chan bool, 1),
-		subscriber: map[string][]Listener{},
-		closed:     false,
-		resultChan: make(chan *Result, 4096),
-		dataFile:   dataFile,
+	if expiry := opts.ExpiryDuration; expiry < 1 {
+		opts.ExpiryDuration = defaultCleanIntervalTime
 	}
+
+	bus := &Bus{
+		topic:    map[string]string{},
+		handles:  map[string][]Handle{},
+		opts:     opts,
+		lock:     NewSpinLock(),
+		capacity: int32(size),
+	}
+	bus.workerCache.New = func() interface{} {
+		return &worker{
+			task: make(chan func(), workerChnCap),
+			bus:  bus,
+		}
+	}
+	bus.workers = newWorkerStack(size)
+	bus.cond = sync.NewCond(bus.lock)
+
+	go bus.purgePeriodically()
+
+	return bus
 }
 
 //Publish a new event
 func (b *Bus) Publish(topic string, data interface{}) {
-	if b.closed {
+	b.rwLock.RLock()
+	handles, exists := b.handles[topic]
+	b.rwLock.RUnlock()
+
+	if !exists {
 		return
 	}
 
-	b.mu.RLock()
-	channels, ok := b.hub[topic]
-	b.mu.RUnlock()
-
-	if !ok {
-		return
-	}
-
-	e := &Event{
+	event := &Event{
 		Topic: topic,
 		Data:  data,
 	}
 
-	deliver := func(ch chan *Event, e *Event) {
-		ch <- e
-	}
-
-	for _, channel := range channels {
-		if len(channel) == cap(channel) {
-			go deliver(channel, e)
-		} else {
-			deliver(channel, e)
+	wrap := func(event *Event, handle Handle) func() {
+		return func() {
+			handle(event)
 		}
 	}
 
+	for _, handle := range handles {
+		task := wrap(event, handle)
+		worker := b.retriveWorker()
+		if worker == nil {
+			return
+		}
+		worker.task <- task
+	}
+}
+
+func (b *Bus) Release() {
+	atomic.StoreInt32(&b.state, CLOSED)
+	b.lock.Lock()
+	b.workers.reset()
+	b.lock.Unlock()
+	b.cond.Broadcast()
+}
+
+func (b *Bus) IsClosed() bool {
+	return atomic.LoadInt32(&b.state) == CLOSED
 }
 
 //Subscribe a event
-func (b *Bus) Subscribe(topic string, listener ...Listener) {
-	b.subMu.RLock()
-	subscribers, exist := b.subscriber[topic]
-	channel, hubExist := b.hub[topic]
-	b.subMu.RUnlock()
-
-	if exist {
-		subscribers = append(subscribers, listener...)
-	} else {
-		subscribers = listener
-	}
-
-	b.subMu.Lock()
-	if !hubExist {
-		channel = make([]chan *Event, len(listener))
-		for i, executor := range listener {
-			ch := make(chan *Event, 1024)
-			b.bootstrapListener(executor, ch)
-			channel[i] = ch
-		}
-		b.hub[topic] = channel
-		b.channels = append(b.channels, channel...)
-	}
-
-	b.subscriber[topic] = subscribers
-	b.subMu.Unlock()
+func (b *Bus) Subscribe(topic string, listener ...Handle) {
+	b.registerTopic(topic)
+	b.registerHandle(topic, listener...)
 }
 
-//Len len
-func (b *Bus) Len() int {
-	sum := 0
-	for _, ch := range b.channels {
-		sum += len(ch)
-	}
-	return sum
+func (b *Bus) Cap() int {
+	return int(atomic.LoadInt32(&b.capacity))
 }
 
-//IsEmpty 是否为空
-func (b *Bus) IsEmpty() bool {
-	return b.Len() == 0
+func (b *Bus) Running() int {
+	return int(atomic.LoadInt32(&b.running))
 }
 
-//Result listener handle result
-func (b *Bus) Result() chan *Result {
-	return b.resultChan
-}
-
-//Stop stop event
-func (b *Bus) Stop() {
-	b.closed = true
-	b.dump()
-
-	quit := make(chan bool, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	go func() {
-		for {
-			if b.IsEmpty() {
-				break
-			}
-		}
-		quit <- true
-	}()
-
-	select {
-	case <-ctx.Done():
-	case <-quit:
-		b.signal <- true
+func (b *Bus) Reboot() {
+	if atomic.CompareAndSwapInt32(&b.state, CLOSED, OPEND) {
+		go b.purgePeriodically()
 	}
 }
 
-//dump channel数据到文件
-func (b *Bus) dump() {
-	data := map[string][]*Event{}
-	for topic, channels := range b.hub {
-		num := len(channels)
-		if num < 1 {
-			continue
-		}
-		rows := []*Event{}
-		for _, channel := range channels {
-			for {
-				select {
-				case e := <-channel:
-					rows = append(rows, e)
-				case <-time.After(time.Microsecond):
-					goto read
-				}
-			}
-		}
-	read:
-		data[topic] = rows
+func (b *Bus) Free() int {
+	c := b.Cap()
+	if c < 0 {
+		return -1
 	}
+	return c - b.Running()
+}
 
-	body, err := json.Marshal(data)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "json marshal fail. error:%s", err.Error())
+func (b *Bus) incRunning() {
+	atomic.AddInt32(&b.running, 1)
+}
+
+func (b *Bus) decRunning() {
+	atomic.AddInt32(&b.capacity, -1)
+}
+
+func (b *Bus) registerTopic(topic string) {
+	b.rwLock.RLock()
+	_, exists := b.topic[topic]
+	b.rwLock.RUnlock()
+
+	if exists {
 		return
 	}
 
-	err = ioutil.WriteFile(b.dataFile, body, 0644)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "write file fail. error:%s", err.Error())
+	b.lock.Lock()
+	b.topic[topic] = topic
+	b.lock.Unlock()
+}
+
+func (b *Bus) registerHandle(topic string, handle ...Handle) {
+	b.rwLock.RLock()
+	handles, exists := b.handles[topic]
+	b.lock.Unlock()
+
+	register := func(handle ...Handle) {
+		b.lock.Lock()
+		b.handles[topic] = handle
+		b.lock.Unlock()
+	}
+
+	if exists {
+		handles = append(handles, handle...)
+		register(handles...)
+		return
+	}
+
+	register(handle...)
+}
+
+func (b *Bus) purgePeriodically() {
+	heartbeat := time.NewTicker(b.opts.ExpiryDuration)
+	defer heartbeat.Stop()
+
+	for range heartbeat.C {
+		if b.IsClosed() {
+			break
+		}
+
+		b.lock.Lock()
+		expiredWorkers := b.workers.retrieve(b.opts.ExpiryDuration)
+		b.lock.Unlock()
+
+		for i := range expiredWorkers {
+			expiredWorkers[i].task <- nil
+			expiredWorkers[i] = nil
+		}
+
+		if b.Running() == 0 {
+			b.cond.Broadcast()
+		}
+
 	}
 }
 
-//load 加载数据到channel
-func (b *Bus) load() error {
-	body, err := ioutil.ReadFile(b.dataFile)
-	if err != nil {
-		return err
+func (b *Bus) retriveWorker() (w *worker) {
+	spanWorker := func() {
+		w := b.workerCache.Get().(*worker)
+		w.run()
 	}
 
-	var data map[string][]*Event
-	err = json.Unmarshal(body, &data)
-	if err != nil {
-		return err
-	}
+	b.lock.Lock()
 
-	deliver := func(ch chan *Event, e *Event) {
-		ch <- e
-	}
-
-	for topic, events := range data {
-		channels, ok := b.hub[topic]
-		if !ok {
-			continue
+	w = b.workers.detach()
+	if w != nil {
+		b.lock.Unlock()
+	} else if capacity := b.Cap(); capacity == -1 || capacity > b.Running() {
+		b.lock.Unlock()
+		spanWorker()
+	} else {
+		if b.opts.NonBlocking {
+			b.lock.Unlock()
+			return
 		}
+	retry:
+		if b.opts.MaxBlockingTasks != 0 && b.blockingNum >= b.opts.MaxBlockingTasks {
+			b.lock.Unlock()
+			return
+		}
+		b.blockingNum++
+		b.cond.Wait()
+		var nw int
 
-		for _, event := range events {
-			for _, ch := range channels {
-				deliver(ch, event)
+		if nw = b.Running(); nw == 0 {
+			b.lock.Unlock()
+			if !b.IsClosed() {
+				spanWorker()
 			}
-		}
-	}
-
-	return nil
-}
-
-//bootstrapListener 启动listener
-func (b *Bus) bootstrapListener(listener Listener, ch chan *Event) {
-	for i := 0; i < b.workers; i++ {
-		go b.listener(listener, ch)
-	}
-}
-
-//listener event listener
-func (b *Bus) listener(listener Listener, ch chan *Event) {
-	for {
-		if b.closed {
-			fmt.Println("event bus exiting.....")
 			return
 		}
 
-		e, ok := <-ch
-		if !ok {
-			fmt.Println("channel already close!!!!")
-			continue
+		if w = b.workers.detach(); w == nil {
+			if nw < capacity {
+				b.lock.Unlock()
+				spanWorker()
+				return
+			}
+			goto retry
 		}
-
-		err := listener(e)
-		success := true
-		if err != nil {
-			success = false
-		}
-
-		res := &Result{
-			Topic:   e.Topic,
-			Success: success,
-			Err:     err,
-		}
-
-		//re check
-		if b.closed {
-			return
-		}
-
-		if cap(b.resultChan) == len(b.resultChan) {
-			go func(res *Result) {
-				b.resultChan <- res
-			}(res)
-		} else {
-			b.resultChan <- res
-		}
+		b.lock.Unlock()
 	}
+	return
 }
 
-//Bootstrap 启动事件监听
-func (b *Bus) Bootstrap() {
-	b.load()
-	t := time.NewTicker(5 * time.Second)
-	ch := make(chan os.Signal, 1)
-
-	signal.Notify(ch, syscall.SIGHUP)
-	signal.Notify(ch, syscall.SIGINT)
-	signal.Notify(ch, syscall.SIGTERM)
-
-loop:
-	for {
-		select {
-		case t := <-t.C:
-			fmt.Printf("%s-topic length:%d\n", t.Format(time.RFC3339), b.Len())
-		case <-ch:
-			b.Stop()
-			fmt.Println("see you again!!!")
-			break loop
-		}
+func (b *Bus) revertWorker(w *worker) bool {
+	if capacity := b.Cap(); (capacity > 0 && b.Running() > capacity) || b.IsClosed() {
+		return false
 	}
+	w.recyleTime = time.Now()
+	b.lock.Lock()
+
+	if b.IsClosed() {
+		b.lock.Unlock()
+		return false
+	}
+
+	err := b.workers.insert(w)
+	if err != nil {
+		b.lock.Unlock()
+		return false
+	}
+
+	b.cond.Signal()
+	b.lock.Unlock()
+
+	return true
 }
