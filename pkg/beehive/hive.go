@@ -2,7 +2,6 @@ package beehive
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"runtime"
 	"sync"
@@ -27,7 +26,7 @@ type Event struct {
 type Beehive struct {
 	topics      map[string]string
 	handles     map[string][]Handle
-	postMan     chan *Event
+	bucket      chan *Event
 	opts        *Options
 	state       int32
 	workerCache sync.Pool
@@ -76,7 +75,7 @@ func NewBeehive(size int, options ...Option) *Beehive {
 		capacity: int32(size),
 	}
 
-	beehive.postMan = beehive.newPostMan()
+	beehive.bucket = beehive.newBucket()
 	beehive.workerCache.New = func() interface{} {
 		return &bee{
 			task: make(chan func(), workerChnCap),
@@ -88,7 +87,7 @@ func NewBeehive(size int, options ...Option) *Beehive {
 
 	go beehive.purgePeriodically()
 	go beehive.load()
-	go beehive.deliver()
+	go beehive.pickHoney()
 
 	return beehive
 }
@@ -112,7 +111,7 @@ func (b *Beehive) Publish(topic string, data interface{}) error {
 		Data:  data,
 	}
 
-	b.postMan <- event
+	b.bucket <- event
 	return nil
 }
 
@@ -121,7 +120,7 @@ func (b *Beehive) Release() {
 	b.lock.Lock()
 
 	b.bees.reset()
-	close(b.postMan)
+	close(b.bucket)
 
 	b.lock.Unlock()
 	b.cond.Broadcast()
@@ -149,11 +148,11 @@ func (b *Beehive) Running() int {
 
 func (b *Beehive) Reboot() {
 	if atomic.CompareAndSwapInt32(&b.state, CLOSED, OPEND) {
-		b.postMan = b.newPostMan()
+		b.bucket = b.newBucket()
 
 		go b.purgePeriodically()
 		go b.load()
-		go b.deliver()
+		go b.pickHoney()
 	}
 }
 
@@ -207,22 +206,15 @@ func (b *Beehive) registerHandle(topic string, handle ...Handle) {
 	register(handle...)
 }
 
-func (b *Beehive) deliver() {
+func (b *Beehive) pickHoney() {
 	wrap := func(event *Event, handle Handle) func() {
 		return func() {
 			handle(event)
 		}
 	}
 
-	go func() {
-		heartbeat := time.NewTicker(time.Second * 1)
-		for range heartbeat.C {
-			fmt.Println("postMan len:", len(b.postMan))
-		}
-	}()
-
 	for !b.IsClosed() {
-		event, ok := <-b.postMan
+		event, ok := <-b.bucket
 		if !ok {
 			return
 		}
@@ -240,7 +232,7 @@ func (b *Beehive) deliver() {
 			task := wrap(event, handle)
 			worker := b.retriveWorker()
 			if worker == nil {
-				fmt.Println("worker is nil")
+				b.opts.Logger.Printf("topic:%s, get worker fail.", event.Topic)
 				continue
 			}
 			worker.task <- task
@@ -346,14 +338,14 @@ func (b *Beehive) revertWorker(w *bee) bool {
 	return true
 }
 
-func (b *Beehive) newPostMan() (postman chan *Event) {
-	postman = make(chan *Event, 1024)
+func (b *Beehive) newBucket() (bucket chan *Event) {
+	bucket = make(chan *Event, b.capacity)
 	return
 }
 
 func (b *Beehive) dump() {
 	messages := []*Event{}
-	for message := range b.postMan {
+	for message := range b.bucket {
 		messages = append(messages, message)
 	}
 
@@ -389,6 +381,6 @@ func (b *Beehive) load() {
 	}
 
 	for _, message := range messages {
-		b.postMan <- message
+		b.bucket <- message
 	}
 }
