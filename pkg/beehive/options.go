@@ -1,4 +1,4 @@
-package event
+package beehive
 
 import "time"
 
@@ -8,6 +8,7 @@ type Options struct {
 	PanicHandler     func(interface{})
 	ExpiryDuration   time.Duration
 	Logger           Logger
+	DumpFile         string
 	NonBlocking      bool
 	MaxBlockingTasks int
 }
@@ -45,5 +46,11 @@ func WithNonBlocking(nonBlocking bool) Option {
 func WithMaxBlockingTasks(maxBlockingTasks int) Option {
 	return func(opts *Options) {
 		opts.MaxBlockingTasks = maxBlockingTasks
+	}
+}
+
+func WithDumpFile(file string) Option {
+	return func(opts *Options) {
+		opts.DumpFile = file
 	}
 }
