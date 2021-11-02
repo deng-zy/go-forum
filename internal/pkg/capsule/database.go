@@ -33,7 +33,6 @@ func newConnection(name string) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(viper.GetInt(fmt.Sprintf("%s.maxIdleConns", prefix)))
 	sqlDB.SetMaxOpenConns(viper.GetInt(fmt.Sprintf("%s.maxOpenCoons", prefix)))
 	sqlDB.SetConnMaxLifetime(viper.GetDuration(fmt.Sprintf("%s.connMaxLifetime", prefix)) * time.Hour)
-	fmt.Printf("+%v", sqlDB.Stats())
 
 	dbConnections.Store(name, db)
 	return db, nil
