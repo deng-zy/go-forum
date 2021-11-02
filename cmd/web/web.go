@@ -5,6 +5,6 @@ import (
 )
 
 func main() {
-	go app.RunBus()
+	app.EventSubecribe()
 	app.Run()
 }

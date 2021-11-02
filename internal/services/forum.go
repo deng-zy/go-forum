@@ -10,7 +10,7 @@ import (
 	"forum/internal/pkg/config"
 	cv "forum/internal/pkg/constants/event"
 	"forum/internal/repositories"
-	"forum/pkg/event"
+	"forum/pkg/beehive"
 	"forum/pkg/model"
 	"forum/pkg/snowflake"
 	"strconv"
@@ -76,7 +76,7 @@ func (f *forumService) Create(form *request.Forum) error {
 	if err != nil {
 		return err
 	}
-	capsule.Bus.Publish(cv.EventNewForum, model.ForumId)
+	beehive.Publish(cv.EventNewForum, model.ForumId)
 	return nil
 }
 
@@ -105,7 +105,7 @@ func (f *forumService) Update(forumID uint64, form *request.Forum) error {
 		return err
 	}
 
-	capsule.Bus.Publish(cv.EventUpdateForum, forumID)
+	beehive.Publish(cv.EventUpdateForum, forumID)
 
 	return nil
 }
@@ -116,7 +116,7 @@ func (f *forumService) Delete(forum uint64) error {
 		return err
 	}
 
-	capsule.Bus.Publish(cv.EventNewForum, forum)
+	beehive.Publish(cv.EventNewForum, forum)
 	return nil
 }
 
@@ -129,7 +129,7 @@ func (f *forumService) Show(forumID uint64) (forum *model.Forum, err error) {
 	return
 }
 
-func (f *forumService) BuildInfoCache(e *event.Event) error {
+func (f *forumService) BuildInfoCache(e *beehive.Event) error {
 	forum := e.Data.(uint64)
 	topic := e.Topic
 	ctx := context.Background()
@@ -153,7 +153,7 @@ func (f *forumService) BuildInfoCache(e *event.Event) error {
 	return nil
 }
 
-func (f *forumService) BuildListCache(e *event.Event) error {
+func (f *forumService) BuildListCache(e *beehive.Event) error {
 	forums := forumRepository.AllForumID()
 	forumIDLi := make([]interface{}, len(forums))
 	for i, forumID := range forums {
@@ -170,11 +170,11 @@ func (f *forumService) BuildListCache(e *event.Event) error {
 	return nil
 }
 
-func (f *forumService) BuildCache(e *event.Event) error {
-	capsule.Bus.Publish(cv.EventNewForum, nil)
+func (f *forumService) BuildCache(e *beehive.Event) error {
+	beehive.Publish(cv.EventNewForum, nil)
 	forumIDLi := forumRepository.AllForumID()
 	for _, forumID := range forumIDLi {
-		capsule.Bus.Publish(cv.EventUpdateForum, forumID)
+		beehive.Publish(cv.EventUpdateForum, forumID)
 	}
 	return nil
 }

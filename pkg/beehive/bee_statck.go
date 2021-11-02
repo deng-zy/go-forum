@@ -50,8 +50,9 @@ func (bs *beeStack) retrieve(duration time.Duration) []*bee {
 	}
 
 	expiryTime := time.Now().Add(-duration)
-	index := bs.search(0, n, expiryTime)
+	index := bs.search(0, n-1, expiryTime)
 
+	bs.expiry = bs.expiry[:0]
 	if index != -1 {
 		bs.expiry = append(bs.expiry, bs.items[:index+1]...)
 		m := copy(bs.items, bs.items[index+1:])
