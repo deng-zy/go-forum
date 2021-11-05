@@ -3,7 +3,8 @@ package app
 import (
 	"forum/internal/pkg/constants/event"
 	"forum/internal/services"
-	"forum/pkg/beehive"
+
+	"github.com/gordon-zhiyong/beehive"
 )
 
 //RunBus bootstrap event listener

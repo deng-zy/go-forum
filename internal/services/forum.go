@@ -10,12 +10,12 @@ import (
 	"forum/internal/pkg/config"
 	cv "forum/internal/pkg/constants/event"
 	"forum/internal/repositories"
-	"forum/pkg/beehive"
 	"forum/pkg/model"
-	"forum/pkg/snowflake"
 	"strconv"
 	"time"
 
+	"github.com/gordon-zhiyong/beehive"
+	"github.com/gordon-zhiyong/snowflake"
 	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
